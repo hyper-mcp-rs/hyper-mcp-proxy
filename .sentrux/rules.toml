@@ -1,0 +1,63 @@
+# .sentrux/rules.toml — Architectural constraints for hyper-mcp-proxy
+#
+# Current quality signal: 0.77 (7738 on the 0-10000 display scale)
+# Bottleneck: modularity (only 2 source files — expected for a small proxy)
+#
+# These rules lock in the project's current structural health and prevent
+# regression as the codebase grows. Adjust thresholds upward as you improve.
+
+[constraints]
+# ── Quality gates ──────────────────────────────────────────────────────
+# Floor set slightly below current signal to allow breathing room during
+# active development while still catching significant regressions.
+min_quality = 0.72
+
+# Acyclicity is perfect today — keep it that way.
+min_acyclicity = 1.0
+
+# Equality is healthy; guard against god-file creep.
+min_equality = 0.75
+
+# Redundancy is perfect; no dead code allowed.
+min_redundancy = 0.90
+
+# Modularity is low by nature (2 files). Don't gate on it yet —
+# revisit once the project grows past ~5 source files.
+# min_modularity = 0.30
+
+# Depth is perfect; revisit if deep dependency chains emerge.
+# min_depth = 0.90
+
+# ── Engineering limits ─────────────────────────────────────────────────
+max_cycles = 0               # Zero tolerance for dependency cycles
+max_cc = 30                  # Cyclomatic complexity per function (lenient for Rust match arms)
+max_fn_lines = 120           # Max lines per function
+max_file_lines = 600         # Max lines per file (proxy.rs is ~521 today)
+no_god_files = true          # Disallow high-fan-out god files
+
+# ── Rust-specific overrides ────────────────────────────────────────────
+[language.rust.constraints]
+max_cc = 30                  # match/if-let chains inflate CC in idiomatic Rust
+
+# ── Layers ─────────────────────────────────────────────────────────────
+# Convention: lower order = upper/outer layer, higher order = foundational.
+# Upper layers (lower order) may depend on foundational layers (higher order).
+# As the project grows, add layers (e.g. config, transport, error).
+
+[[layers]]
+name = "entry"
+paths = ["src/main.rs"]
+order = 0                    # Outermost — the application entry point
+
+[[layers]]
+name = "proxy"
+paths = ["src/proxy.rs"]
+order = 1                    # Foundational proxy logic
+
+# ── Boundaries ─────────────────────────────────────────────────────────
+# Proxy logic must never reach back into the entry point.
+
+[[boundaries]]
+from = "src/proxy.rs"
+to = "src/main.rs"
+reason = "Proxy logic must not depend on the application entry point"
