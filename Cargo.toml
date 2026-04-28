@@ -1,0 +1,38 @@
+[package]
+name = "hyper-mcp-proxy"
+version = "0.1.0"
+edition = "2024"
+description = "A streamable-http to stdio MCP proxy"
+keywords = ["rust", "ai", "mcp", "cli"]
+categories = ["command-line-utilities"]
+readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/hyper-mcp-rs/hyper-mcp-proxy"
+homepage = "https://github.com/hyper-mcp-rs/hyper-mcp-proxy"
+documentation = "https://github.com/hyper-mcp-rs/hyper-mcp-proxy"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.8"
+clap = { version = "4.6", features = ["derive"] }
+rmcp = { version = "1.5", features = [
+    "server",
+    "client",
+    "transport-streamable-http-server",
+    "transport-streamable-http-server-session",
+    "transport-child-process",
+] }
+tokio = { version = "1.52", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "hyper-mcp"
+path = "src/main.rs"
+
+[package.metadata.release]
+publish = true
+push = true
+tag = true
+tag-name = "v{{version}}"
