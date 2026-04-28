@@ -108,10 +108,11 @@ impl ProxyHandler {
 
         let peer = client_service.peer().clone();
 
-        // Probe the child to discover its actual capabilities.
-        let capabilities = Self::probe_capabilities(&peer).await;
-
-        let mut init_result = InitializeResult::new(capabilities);
+        // Get the child's capabilities directly from the initialization handshake.
+        let mut init_result = client_service
+            .peer_info()
+            .cloned()
+            .unwrap_or_else(|| InitializeResult::new(ServerCapabilities::default()));
         init_result.server_info =
             Implementation::new("hyper-streamable-http-proxy", env!("CARGO_PKG_VERSION"));
 
@@ -122,34 +123,6 @@ impl ProxyHandler {
         });
 
         Ok((peer, init_result, handle))
-    }
-
-    /// Probe the child server to discover its actual capabilities.
-    ///
-    /// We try each list operation and record which ones the child supports.
-    async fn probe_capabilities(peer: &Peer<RoleClient>) -> ServerCapabilities {
-        let mut caps = ServerCapabilities::default();
-
-        if peer.list_tools(None).await.is_ok() {
-            caps.tools = Some(rmcp::model::ToolsCapability {
-                list_changed: Some(true),
-            });
-        }
-
-        if peer.list_resources(None).await.is_ok() {
-            caps.resources = Some(rmcp::model::ResourcesCapability {
-                subscribe: Some(true),
-                list_changed: Some(true),
-            });
-        }
-
-        if peer.list_prompts(None).await.is_ok() {
-            caps.prompts = Some(rmcp::model::PromptsCapability {
-                list_changed: Some(true),
-            });
-        }
-
-        caps
     }
 
     /// Helper to convert a service error into an [`ErrorData`].
@@ -343,9 +316,10 @@ impl ServerHandler for ProxyHandler {
         _context: NotificationContext<RoleServer>,
     ) {
         if let Ok(peer) = self.peer()
-            && let Err(e) = peer.notify_cancelled(notification).await {
-                tracing::warn!(error = %e, "failed to forward cancellation to child");
-            }
+            && let Err(e) = peer.notify_cancelled(notification).await
+        {
+            tracing::warn!(error = %e, "failed to forward cancellation to child");
+        }
     }
 
     #[tracing::instrument(skip_all)]
@@ -355,9 +329,10 @@ impl ServerHandler for ProxyHandler {
         _context: NotificationContext<RoleServer>,
     ) {
         if let Ok(peer) = self.peer()
-            && let Err(e) = peer.notify_progress(notification).await {
-                tracing::warn!(error = %e, "failed to forward progress to child");
-            }
+            && let Err(e) = peer.notify_progress(notification).await
+        {
+            tracing::warn!(error = %e, "failed to forward progress to child");
+        }
     }
 
     #[tracing::instrument(skip_all)]
@@ -368,9 +343,10 @@ impl ServerHandler for ProxyHandler {
     #[tracing::instrument(skip_all)]
     async fn on_roots_list_changed(&self, _context: NotificationContext<RoleServer>) {
         if let Ok(peer) = self.peer()
-            && let Err(e) = peer.notify_roots_list_changed().await {
-                tracing::warn!(error = %e, "failed to forward roots_list_changed to child");
-            }
+            && let Err(e) = peer.notify_roots_list_changed().await
+        {
+            tracing::warn!(error = %e, "failed to forward roots_list_changed to child");
+        }
     }
 
     #[tracing::instrument(skip_all)]

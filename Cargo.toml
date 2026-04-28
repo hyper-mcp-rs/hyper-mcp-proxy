@@ -28,7 +28,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[bin]]
-name = "hyper-mcp"
+name = "hyper-mcp-proxy"
 path = "src/main.rs"
 
 [package.metadata.release]
