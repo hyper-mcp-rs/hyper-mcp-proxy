@@ -519,3 +519,167 @@ impl ServerHandler for ProxyHandler {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    // -----------------------------------------------------------------------
+    // ProxyHandler::new
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_creates_uninitialized_handler() {
+        let command: Arc<[String]> = vec!["echo".into(), "hello".into()].into();
+        let handler = ProxyHandler::new(command.clone());
+
+        assert_eq!(&*handler.command, &*command);
+        assert!(
+            handler.inner.get().is_none(),
+            "inner must be None before initialize"
+        );
+    }
+
+    #[test]
+    fn test_new_with_single_command() {
+        let command: Arc<[String]> = vec!["my-server".into()].into();
+        let handler = ProxyHandler::new(command);
+
+        assert_eq!(handler.command.len(), 1);
+        assert_eq!(handler.command[0], "my-server");
+    }
+
+    #[test]
+    fn test_new_preserves_command_order_and_args() {
+        let command: Arc<[String]> = vec![
+            "node".into(),
+            "--experimental-modules".into(),
+            "server.js".into(),
+        ]
+        .into();
+        let handler = ProxyHandler::new(command);
+
+        assert_eq!(handler.command.len(), 3);
+        assert_eq!(handler.command[0], "node");
+        assert_eq!(handler.command[1], "--experimental-modules");
+        assert_eq!(handler.command[2], "server.js");
+    }
+
+    // -----------------------------------------------------------------------
+    // ProxyHandler::peer — error when not initialized
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_returns_error_when_not_initialized() {
+        let handler = ProxyHandler::new(vec!["echo".into()].into());
+
+        let result = handler.peer();
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("not initialized"),
+            "expected 'not initialized' in message, got: {}",
+            err.message,
+        );
+        assert!(err.data.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ProxyHandler::child_error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_child_error_with_string_message() {
+        let err = ProxyHandler::child_error("connection refused");
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("child server error"),
+            "expected 'child server error' prefix, got: {}",
+            err.message,
+        );
+        assert!(
+            err.message.contains("connection refused"),
+            "expected original message in output, got: {}",
+            err.message,
+        );
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn test_child_error_with_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe broken");
+        let err = ProxyHandler::child_error(io_err);
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(err.message.contains("child server error"));
+        assert!(err.message.contains("pipe broken"));
+    }
+
+    #[test]
+    fn test_child_error_with_empty_message() {
+        let err = ProxyHandler::child_error("");
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(err.message.contains("child server error"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ChildClientHandler::upstream_error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_upstream_error_with_string_message() {
+        let err = ChildClientHandler::upstream_error("timeout");
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("upstream client error"),
+            "expected 'upstream client error' prefix, got: {}",
+            err.message,
+        );
+        assert!(
+            err.message.contains("timeout"),
+            "expected original message in output, got: {}",
+            err.message,
+        );
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn test_upstream_error_with_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset");
+        let err = ChildClientHandler::upstream_error(io_err);
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(err.message.contains("upstream client error"));
+        assert!(err.message.contains("connection reset"));
+    }
+
+    #[test]
+    fn test_upstream_error_with_empty_message() {
+        let err = ChildClientHandler::upstream_error("");
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(err.message.contains("upstream client error"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Error helpers produce distinct prefixes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_child_and_upstream_errors_have_distinct_prefixes() {
+        let child_err = ProxyHandler::child_error("boom");
+        let upstream_err = ChildClientHandler::upstream_error("boom");
+
+        // Same error code, but different human-readable prefixes
+        assert_eq!(child_err.code, upstream_err.code);
+        assert_ne!(child_err.message, upstream_err.message);
+        assert!(child_err.message.contains("child server error"));
+        assert!(upstream_err.message.contains("upstream client error"));
+    }
+}
