@@ -1,20 +1,156 @@
 use std::sync::Arc;
 
 use rmcp::{
-    ErrorData, ServerHandler, ServiceExt,
+    ClientHandler, ErrorData, ServerHandler, ServiceExt,
     model::{
         CallToolRequestParams, CallToolResult, CancelledNotificationParam, CompleteRequestParams,
-        CompleteResult, CustomNotification, CustomRequest, CustomResult, ErrorCode,
-        GetPromptRequestParams, GetPromptResult, Implementation, InitializeRequestParams,
-        InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-        ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
-        ReadResourceRequestParams, ReadResourceResult, ServerCapabilities, SetLevelRequestParams,
+        CompleteResult, CreateElicitationRequestParams, CreateElicitationResult,
+        CreateMessageRequestParams, CreateMessageResult, CustomNotification, CustomRequest,
+        CustomResult, ElicitationResponseNotificationParam, ErrorCode, GetPromptRequestParams,
+        GetPromptResult, Implementation, InitializeRequestParams, InitializeResult,
+        ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListRootsResult,
+        ListToolsResult, LoggingMessageNotificationParam, PaginatedRequestParams,
+        ProgressNotificationParam, ReadResourceRequestParams, ReadResourceResult,
+        ResourceUpdatedNotificationParam, ServerCapabilities, SetLevelRequestParams,
         SubscribeRequestParams, UnsubscribeRequestParams,
     },
     service::{NotificationContext, Peer, RequestContext, RoleClient, RoleServer},
     transport::child_process::TokioChildProcess,
 };
 use tokio::sync::OnceCell;
+
+// ---------------------------------------------------------------------------
+// ChildClientHandler — forwards child→client messages to the upstream peer
+// ---------------------------------------------------------------------------
+
+/// A [`ClientHandler`] that receives notifications and requests from the child
+/// MCP server and forwards them to the upstream client via a [`Peer<RoleServer>`].
+struct ChildClientHandler {
+    /// Peer handle for the upstream (external) client connection.
+    upstream: Peer<RoleServer>,
+}
+
+impl ClientHandler for ChildClientHandler {
+    // -- Requests from the child server ------------------------------------
+
+    async fn create_message(
+        &self,
+        params: CreateMessageRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<CreateMessageResult, ErrorData> {
+        self.upstream
+            .create_message(params)
+            .await
+            .map_err(Self::upstream_error)
+    }
+
+    async fn list_roots(
+        &self,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<ListRootsResult, ErrorData> {
+        self.upstream
+            .list_roots()
+            .await
+            .map_err(Self::upstream_error)
+    }
+
+    async fn create_elicitation(
+        &self,
+        request: CreateElicitationRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<CreateElicitationResult, ErrorData> {
+        self.upstream
+            .create_elicitation(request)
+            .await
+            .map_err(Self::upstream_error)
+    }
+
+    // -- Notifications from the child server --------------------------------
+
+    async fn on_cancelled(
+        &self,
+        params: CancelledNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if let Err(e) = self.upstream.notify_cancelled(params).await {
+            tracing::warn!(error = %e, "failed to forward cancelled notification to client");
+        }
+    }
+
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if let Err(e) = self.upstream.notify_progress(params).await {
+            tracing::warn!(error = %e, "failed to forward progress notification to client");
+        }
+    }
+
+    async fn on_logging_message(
+        &self,
+        params: LoggingMessageNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if let Err(e) = self.upstream.notify_logging_message(params).await {
+            tracing::warn!(error = %e, "failed to forward logging message to client");
+        }
+    }
+
+    async fn on_resource_updated(
+        &self,
+        params: ResourceUpdatedNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if let Err(e) = self.upstream.notify_resource_updated(params).await {
+            tracing::warn!(error = %e, "failed to forward resource updated notification to client");
+        }
+    }
+
+    async fn on_resource_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        if let Err(e) = self.upstream.notify_resource_list_changed().await {
+            tracing::warn!(error = %e, "failed to forward resource list changed notification to client");
+        }
+    }
+
+    async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        if let Err(e) = self.upstream.notify_tool_list_changed().await {
+            tracing::warn!(error = %e, "failed to forward tool list changed notification to client");
+        }
+    }
+
+    async fn on_prompt_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        if let Err(e) = self.upstream.notify_prompt_list_changed().await {
+            tracing::warn!(error = %e, "failed to forward prompt list changed notification to client");
+        }
+    }
+
+    async fn on_url_elicitation_notification_complete(
+        &self,
+        params: ElicitationResponseNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if let Err(e) = self.upstream.notify_url_elicitation_completed(params).await {
+            tracing::warn!(error = %e, "failed to forward elicitation completion notification to client");
+        }
+    }
+}
+
+impl ChildClientHandler {
+    /// Convert a service error into an [`ErrorData`] suitable for returning
+    /// to the child server.
+    fn upstream_error(e: impl std::fmt::Display) -> ErrorData {
+        ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!("upstream client error: {e}"),
+            None,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProxyHandler — the server-side handler presented to the upstream client
+// ---------------------------------------------------------------------------
 
 /// Shared state for a single proxy session, created during initialization.
 struct ProxyInner {
@@ -61,10 +197,15 @@ impl ProxyHandler {
 
     /// Spawn the child process and establish an MCP client connection to it.
     ///
+    /// `upstream` is the [`Peer<RoleServer>`] for the external client so that
+    /// notifications and requests originating from the child can be forwarded
+    /// back through it.
+    ///
     /// Returns the peer handle, the child's [`InitializeResult`], and a
     /// background join-handle that keeps the client service alive.
     async fn spawn_child(
         &self,
+        upstream: Peer<RoleServer>,
     ) -> Result<
         (
             Peer<RoleClient>,
@@ -94,10 +235,11 @@ impl ProxyHandler {
             )
         })?;
 
-        // Connect as an MCP client to the child.
-        // `()` as the client handler means we accept defaults (no custom notification handling).
-        // `.serve()` performs the full initialize handshake with the child.
-        let client_service = ().serve(transport).await.map_err(|e| {
+        // Connect as an MCP client to the child, using our forwarding handler
+        // so that notifications / requests the child sends are relayed back to
+        // the upstream client.
+        let handler = ChildClientHandler { upstream };
+        let client_service = handler.serve(transport).await.map_err(|e| {
             tracing::error!(error = %e, "failed to connect to child MCP server");
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -144,9 +286,9 @@ impl ServerHandler for ProxyHandler {
     async fn initialize(
         &self,
         _request: InitializeRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
-        let (peer, init_result, handle) = self.spawn_child().await?;
+        let (peer, init_result, handle) = self.spawn_child(context.peer.clone()).await?;
 
         self.inner
             .set(ProxyInner {

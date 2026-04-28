@@ -21,6 +21,7 @@ rmcp = { version = "1.5", features = [
     "transport-streamable-http-server",
     "transport-streamable-http-server-session",
     "transport-child-process",
+    "elicitation",
 ] }
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = "0.7"
