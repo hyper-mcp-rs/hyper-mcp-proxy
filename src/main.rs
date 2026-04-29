@@ -59,27 +59,9 @@ async fn main() -> Result<()> {
     let cancellation_token = CancellationToken::new();
     let command: Arc<[String]> = cli.command.into();
 
-    // Build allowed hosts list from the configured bind address
-    let bind_host = cli.host.clone();
-    let bind_port = cli.port;
-    let mut allowed_hosts = vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-        "::1".to_string(),
-    ];
-    let host_with_port = format!("{}:{}", bind_host, bind_port);
-    if !allowed_hosts.contains(&bind_host) {
-        allowed_hosts.push(bind_host.clone());
-    }
-    allowed_hosts.push(host_with_port.clone());
-    // Also add localhost:port and 127.0.0.1:port
-    allowed_hosts.push(format!("localhost:{}", bind_port));
-    allowed_hosts.push(format!("127.0.0.1:{}", bind_port));
-    allowed_hosts.push(format!("::1:{}", bind_port));
-
     let config = StreamableHttpServerConfig::default()
         .with_cancellation_token(cancellation_token.clone())
-        .with_allowed_hosts(allowed_hosts);
+        .disable_allowed_hosts();
 
     let cmd = command.clone();
     let mcp_service: StreamableHttpService<ProxyHandler, LocalSessionManager> =

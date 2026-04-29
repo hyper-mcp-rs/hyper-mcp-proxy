@@ -27,6 +27,29 @@ MCP Client ──Streamable HTTP──▶ hyper-mcp-proxy ──stdio──▶ C
 - **Graceful shutdown** — `Ctrl-C` cancels all active sessions and waits for
   in-flight requests to drain.
 
+## Network Security
+
+The proxy **does not perform any host-header validation or authentication**.
+It will accept connections from any source address on whatever interface it is
+bound to. This is by design — access control is a networking responsibility,
+not an application one.
+
+For **local development** the default bind address (`127.0.0.1`) limits
+connections to the loopback interface, which is usually sufficient.
+
+For **public or shared deployments** you should layer network-level controls
+in front of the proxy:
+
+- **Security groups / NACLs** — restrict inbound traffic to known CIDR
+  ranges or specific IP addresses.
+- **Reverse proxy** — place the proxy behind nginx, Caddy, or an API gateway
+  that handles TLS termination, authentication, and rate limiting.
+- **Firewall rules** — use host-level firewall rules (e.g. `iptables`,
+  `nftables`, `pf`) to whitelist allowed source addresses.
+
+> **⚠️ Do not expose the proxy directly to the public internet without
+> network-level access controls in place.**
+
 ## Installation
 
 ### From crates.io (recommended)
