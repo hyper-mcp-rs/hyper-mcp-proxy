@@ -29,11 +29,32 @@ MCP Client ──Streamable HTTP──▶ hyper-mcp-proxy ──stdio──▶ C
 
 ## Installation
 
+### From crates.io (recommended)
+
 ```sh
+cargo install hyper-mcp-proxy
+```
+
+This downloads the latest published release, compiles it, and places the
+`hyper-mcp-proxy` binary in your Cargo bin directory (usually `~/.cargo/bin`).
+
+To install a specific version:
+
+```sh
+cargo install hyper-mcp-proxy@0.1.0
+```
+
+### From source
+
+Clone the repository and build locally:
+
+```sh
+git clone https://github.com/hyper-mcp-rs/hyper-mcp-proxy.git
+cd hyper-mcp-proxy
 cargo install --path .
 ```
 
-Or build from source:
+Or build without installing:
 
 ```sh
 cargo build --release
