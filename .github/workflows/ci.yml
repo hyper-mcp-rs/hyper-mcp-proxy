@@ -170,6 +170,9 @@ jobs:
           # This makes cargo think files haven't changed since the cache was created
           git ls-files -z | xargs -0 touch
 
+      - name: Install sentrux
+        run: curl -fsSL https://raw.githubusercontent.com/sentrux/sentrux/main/install.sh | sh
+
       - name: Run tests
         run: RUST_BACKTRACE=1 cargo test --workspace --all-features --locked
 

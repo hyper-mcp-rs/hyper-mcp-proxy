@@ -28,6 +28,15 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+rmcp = { version = "1.5", features = [
+    "client",
+    "transport-streamable-http-client",
+    "transport-streamable-http-client-reqwest",
+] }
+serde_json = "1.0"
+tokio = { version = "1.52", features = ["full"] }
+
 [[bin]]
 name = "hyper-mcp-proxy"
 path = "src/main.rs"
