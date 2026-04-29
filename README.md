@@ -67,6 +67,38 @@ To install a specific version:
 cargo install hyper-mcp-proxy@0.1.0
 ```
 
+### Pre-built binaries
+
+Download a pre-built binary from the
+[GitHub Releases](https://github.com/hyper-mcp-rs/hyper-mcp-proxy/releases)
+page. Each release includes assets for the following targets:
+
+| Platform | Asset |
+|----------|-------|
+| macOS (Apple Silicon) | `hyper-mcp-proxy-aarch64-apple-darwin.tar.gz` |
+| Linux (x86_64) | `hyper-mcp-proxy-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (aarch64) | `hyper-mcp-proxy-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows (x86_64) | `hyper-mcp-proxy-x86_64-pc-windows-msvc.zip` |
+
+**macOS / Linux:**
+
+```sh
+# Replace <VERSION> and <TARGET> with the desired release and platform
+curl -L -o hyper-mcp-proxy.tar.gz \
+  https://github.com/hyper-mcp-rs/hyper-mcp-proxy/releases/download/<VERSION>/hyper-mcp-proxy-<TARGET>.tar.gz
+tar xzf hyper-mcp-proxy.tar.gz
+sudo mv hyper-mcp-proxy /usr/local/bin/
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# Replace <VERSION> with the desired release
+Invoke-WebRequest -Uri "https://github.com/hyper-mcp-rs/hyper-mcp-proxy/releases/download/<VERSION>/hyper-mcp-proxy-x86_64-pc-windows-msvc.zip" -OutFile hyper-mcp-proxy.zip
+Expand-Archive hyper-mcp-proxy.zip -DestinationPath .
+# Move hyper-mcp-proxy.exe to a directory on your PATH
+```
+
 ### From source
 
 Clone the repository and build locally:
