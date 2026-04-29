@@ -2,8 +2,9 @@
 name = "hyper-mcp-proxy"
 version = "0.1.0"
 edition = "2024"
+authors = ["Joseph Wortmann <joseph.wortmann@gmail.com>"]
 description = "A streamable-http to stdio MCP proxy"
-keywords = ["rust", "ai", "mcp", "cli"]
+keywords = ["rust", "ai", "mcp", "cli", "streamable-http"]
 categories = ["command-line-utilities"]
 readme = "README.md"
 license = "Apache-2.0"
