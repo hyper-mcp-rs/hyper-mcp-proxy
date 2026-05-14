@@ -16,7 +16,7 @@ documentation = "https://github.com/hyper-mcp-rs/hyper-mcp-proxy"
 anyhow = "1.0"
 axum = "0.8"
 clap = { version = "4.6", features = ["derive"] }
-rmcp = { version = "1.6", features = [
+rmcp = { version = "1.7", features = [
     "server",
     "client",
     "transport-streamable-http-server",
@@ -30,7 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-rmcp = { version = "1.6", features = [
+rmcp = { version = "1.7", features = [
     "client",
     "transport-streamable-http-client",
     "transport-streamable-http-client-reqwest",
