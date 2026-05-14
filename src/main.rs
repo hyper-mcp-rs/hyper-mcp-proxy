@@ -22,7 +22,7 @@ use proxy::ProxyHandler;
 /// bidirectionally.
 #[derive(Parser, Debug)]
 #[command(
-    name = "hyper-streamable-http",
+    name = "hyper-mcp-proxy",
     version,
     about = "Streamable HTTP to stdio MCP proxy"
 )]

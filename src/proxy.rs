@@ -255,8 +255,7 @@ impl ProxyHandler {
             .peer_info()
             .cloned()
             .unwrap_or_else(|| InitializeResult::new(ServerCapabilities::default()));
-        init_result.server_info =
-            Implementation::new("hyper-streamable-http-proxy", env!("CARGO_PKG_VERSION"));
+        init_result.server_info = Implementation::new("hyper-mcp-proxy", env!("CARGO_PKG_VERSION"));
 
         // Keep the client service alive in a background task.
         let handle = tokio::spawn(async move {

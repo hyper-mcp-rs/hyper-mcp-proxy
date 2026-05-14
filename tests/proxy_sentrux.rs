@@ -201,7 +201,7 @@ async fn test_initialize_returns_proxy_server_info() {
 
     // The proxy rewrites server_info to its own identity.
     assert_eq!(
-        info.server_info.name, "hyper-streamable-http-proxy",
+        info.server_info.name, "hyper-mcp-proxy",
         "expected proxy's own server name, got: {}",
         info.server_info.name
     );
