@@ -6,10 +6,10 @@ use rmcp::{
         CallToolRequestParams, CallToolResult, CancelledNotificationParam, CompleteRequestParams,
         CompleteResult, CreateElicitationRequestParams, CreateElicitationResult,
         CreateMessageRequestParams, CreateMessageResult, CustomNotification, CustomRequest,
-        CustomResult, ElicitationResponseNotificationParam, ErrorCode, GetPromptRequestParams,
-        GetPromptResult, Implementation, InitializeRequestParams, InitializeResult,
-        ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListRootsResult,
-        ListToolsResult, LoggingMessageNotificationParam, PaginatedRequestParams,
+        CustomResult, ElicitationResponseNotificationParam, ErrorCode, Extensions,
+        GetPromptRequestParams, GetPromptResult, Implementation, InitializeRequestParams,
+        InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+        ListRootsResult, ListToolsResult, LoggingMessageNotificationParam, PaginatedRequestParams,
         ProgressNotificationParam, ReadResourceRequestParams, ReadResourceResult,
         ResourceUpdatedNotificationParam, ServerCapabilities, SetLevelRequestParams,
         SubscribeRequestParams, UnsubscribeRequestParams,
@@ -18,6 +18,21 @@ use rmcp::{
     transport::child_process::TokioChildProcess,
 };
 use tokio::sync::OnceCell;
+use tracing::{Span, field};
+
+/// HTTP header that carries the MCP session ID on every post-`initialize` request.
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+
+/// Extract the MCP session ID from a request's HTTP parts, if present.
+///
+/// Returns `None` on the `initialize` request itself (the client doesn't have
+/// an ID yet) and for any non-HTTP transport.
+fn session_id_from_extensions(extensions: &Extensions) -> Option<Arc<str>> {
+    let parts = extensions.get::<http::request::Parts>()?;
+    let value = parts.headers.get(MCP_SESSION_ID_HEADER)?;
+    let s = value.to_str().ok()?;
+    Some(Arc::from(s))
+}
 
 // ---------------------------------------------------------------------------
 // ChildClientHandler — forwards child→client messages to the upstream peer
@@ -28,6 +43,12 @@ use tokio::sync::OnceCell;
 struct ChildClientHandler {
     /// Peer handle for the upstream (external) client connection.
     upstream: Peer<RoleServer>,
+    /// Shared cell holding the session ID (populated by the upstream
+    /// [`ProxyHandler`] on the first post-`initialize` request).
+    ///
+    /// Notifications flowing from the child to the client don't carry HTTP
+    /// headers, so we rely on this cached value for log correlation.
+    session_id: Arc<OnceCell<Arc<str>>>,
 }
 
 impl ClientHandler for ChildClientHandler {
@@ -67,69 +88,85 @@ impl ClientHandler for ChildClientHandler {
 
     // -- Notifications from the child server --------------------------------
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_cancelled(
         &self,
         params: CancelledNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_cancelled(params).await {
             tracing::warn!(error = %e, "failed to forward cancelled notification to client");
         }
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_progress(
         &self,
         params: ProgressNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_progress(params).await {
             tracing::warn!(error = %e, "failed to forward progress notification to client");
         }
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_logging_message(
         &self,
         params: LoggingMessageNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_logging_message(params).await {
             tracing::warn!(error = %e, "failed to forward logging message to client");
         }
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_resource_updated(
         &self,
         params: ResourceUpdatedNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_resource_updated(params).await {
             tracing::warn!(error = %e, "failed to forward resource updated notification to client");
         }
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_resource_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_resource_list_changed().await {
             tracing::warn!(error = %e, "failed to forward resource list changed notification to client");
         }
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_tool_list_changed().await {
             tracing::warn!(error = %e, "failed to forward tool list changed notification to client");
         }
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_prompt_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_prompt_list_changed().await {
             tracing::warn!(error = %e, "failed to forward prompt list changed notification to client");
         }
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_url_elicitation_notification_complete(
         &self,
         params: ElicitationResponseNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        self.record_session();
         if let Err(e) = self.upstream.notify_url_elicitation_completed(params).await {
             tracing::warn!(error = %e, "failed to forward elicitation completion notification to client");
         }
@@ -146,6 +183,13 @@ impl ChildClientHandler {
             None,
         )
     }
+
+    /// Record the cached session ID on the current tracing span (if known).
+    fn record_session(&self) {
+        if let Some(id) = self.session_id.get() {
+            Span::current().record("session_id", id.as_ref());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +202,8 @@ struct ProxyInner {
     peer: Peer<RoleClient>,
     /// Background task keeping the client service alive.
     _service_handle: tokio::task::JoinHandle<()>,
+    /// PID of the spawned child process, when available.
+    child_pid: Option<u32>,
 }
 
 /// A [`ServerHandler`] implementation that proxies all MCP operations to a
@@ -171,6 +217,11 @@ pub struct ProxyHandler {
     command: Arc<[String]>,
     /// Lazily initialized connection to the child process.
     inner: OnceCell<ProxyInner>,
+    /// The MCP session ID, learned from the first post-`initialize` request.
+    ///
+    /// Shared with [`ChildClientHandler`] so that notifications flowing back
+    /// from the child can also be logged with the right session.
+    session_id: Arc<OnceCell<Arc<str>>>,
 }
 
 impl ProxyHandler {
@@ -181,6 +232,7 @@ impl ProxyHandler {
         Self {
             command,
             inner: OnceCell::new(),
+            session_id: Arc::new(OnceCell::new()),
         }
     }
 
@@ -195,14 +247,34 @@ impl ProxyHandler {
         })
     }
 
+    /// Record the session ID and child PID on the current tracing span.
+    ///
+    /// On the first call that carries an `Mcp-Session-Id` header (i.e. the
+    /// first request after `initialize`), the ID is cached so that subsequent
+    /// requests *and* child→client notifications can all be correlated.
+    fn record_session(&self, extensions: &Extensions) {
+        // Cache the session ID the first time we see it on a request.
+        if let Some(id) = session_id_from_extensions(extensions) {
+            let _ = self.session_id.set(id);
+        }
+        let span = Span::current();
+        if let Some(id) = self.session_id.get() {
+            span.record("session_id", id.as_ref());
+        }
+        if let Some(pid) = self.inner.get().and_then(|inner| inner.child_pid) {
+            span.record("pid", pid);
+        }
+    }
+
     /// Spawn the child process and establish an MCP client connection to it.
     ///
     /// `upstream` is the [`Peer<RoleServer>`] for the external client so that
     /// notifications and requests originating from the child can be forwarded
     /// back through it.
     ///
-    /// Returns the peer handle, the child's [`InitializeResult`], and a
-    /// background join-handle that keeps the client service alive.
+    /// Returns the peer handle, the child's [`InitializeResult`], a background
+    /// join-handle that keeps the client service alive, and the child PID (if
+    /// the platform exposed one).
     async fn spawn_child(
         &self,
         upstream: Peer<RoleServer>,
@@ -211,6 +283,7 @@ impl ProxyHandler {
             Peer<RoleClient>,
             InitializeResult,
             tokio::task::JoinHandle<()>,
+            Option<u32>,
         ),
         ErrorData,
     > {
@@ -235,10 +308,20 @@ impl ProxyHandler {
             )
         })?;
 
+        // Capture the child PID before the transport is consumed by `serve`.
+        let child_pid = transport.id();
+        if let Some(pid) = child_pid {
+            Span::current().record("pid", pid);
+            tracing::info!(pid, %program, "child MCP server process spawned");
+        }
+
         // Connect as an MCP client to the child, using our forwarding handler
         // so that notifications / requests the child sends are relayed back to
         // the upstream client.
-        let handler = ChildClientHandler { upstream };
+        let handler = ChildClientHandler {
+            upstream,
+            session_id: Arc::clone(&self.session_id),
+        };
         let client_service = handler.serve(transport).await.map_err(|e| {
             tracing::error!(error = %e, "failed to connect to child MCP server");
             ErrorData::new(
@@ -257,13 +340,20 @@ impl ProxyHandler {
             .unwrap_or_else(|| InitializeResult::new(ServerCapabilities::default()));
         init_result.server_info = Implementation::new("hyper-mcp-proxy", env!("CARGO_PKG_VERSION"));
 
-        // Keep the client service alive in a background task.
+        // Keep the client service alive in a background task. Carry the
+        // session ID forward so the "session ended" log line can be
+        // correlated with the rest of the session.
+        let session_id_for_task = Arc::clone(&self.session_id);
         let handle = tokio::spawn(async move {
             let _ = client_service.waiting().await;
-            tracing::info!("child MCP server session ended");
+            let session_id = session_id_for_task
+                .get()
+                .map(|s| s.as_ref().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            tracing::info!(session_id = %session_id, pid = ?child_pid, "child MCP server session ended");
         });
 
-        Ok((peer, init_result, handle))
+        Ok((peer, init_result, handle, child_pid))
     }
 
     /// Helper to convert a service error into an [`ErrorData`].
@@ -281,18 +371,27 @@ impl ProxyHandler {
 // ---------------------------------------------------------------------------
 
 impl ServerHandler for ProxyHandler {
-    #[tracing::instrument(skip_all, fields(session = "initializing"))]
+    #[tracing::instrument(
+        skip_all,
+        fields(session_id = field::Empty, pid = field::Empty)
+    )]
     async fn initialize(
         &self,
         _request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
-        let (peer, init_result, handle) = self.spawn_child(context.peer.clone()).await?;
+        // The `Mcp-Session-Id` header is only assigned in the *response* to
+        // `initialize`, so it's usually absent here. We still try, in case a
+        // future transport surfaces it earlier.
+        self.record_session(&context.extensions);
+
+        let (peer, init_result, handle, child_pid) = self.spawn_child(context.peer.clone()).await?;
 
         self.inner
             .set(ProxyInner {
                 peer,
                 _service_handle: handle,
+                child_pid,
             })
             .map_err(|_| {
                 ErrorData::new(
@@ -302,30 +401,38 @@ impl ServerHandler for ProxyHandler {
                 )
             })?;
 
-        tracing::info!("proxy session initialized successfully");
+        if let Some(pid) = child_pid {
+            Span::current().record("pid", pid);
+        }
+        tracing::info!(pid = ?child_pid, "proxy session initialized successfully");
         Ok(init_result)
     }
 
     // -- Tools --------------------------------------------------------------
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn list_tools(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .list_tools(request)
             .await
             .map_err(Self::child_error)
     }
 
-    #[tracing::instrument(skip_all, fields(tool = %request.name))]
+    #[tracing::instrument(
+        skip_all,
+        fields(session_id = field::Empty, pid = field::Empty, tool = %request.name)
+    )]
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .call_tool(request)
             .await
@@ -334,60 +441,68 @@ impl ServerHandler for ProxyHandler {
 
     // -- Resources ----------------------------------------------------------
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn list_resources(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .list_resources(request)
             .await
             .map_err(Self::child_error)
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn list_resource_templates(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .list_resource_templates(request)
             .await
             .map_err(Self::child_error)
     }
 
-    #[tracing::instrument(skip_all, fields(uri = %request.uri))]
+    #[tracing::instrument(
+        skip_all,
+        fields(session_id = field::Empty, pid = field::Empty, uri = %request.uri)
+    )]
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .read_resource(request)
             .await
             .map_err(Self::child_error)
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn subscribe(
         &self,
         request: SubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .subscribe(request)
             .await
             .map_err(Self::child_error)
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn unsubscribe(
         &self,
         request: UnsubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .unsubscribe(request)
             .await
@@ -396,24 +511,29 @@ impl ServerHandler for ProxyHandler {
 
     // -- Prompts ------------------------------------------------------------
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn list_prompts(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .list_prompts(request)
             .await
             .map_err(Self::child_error)
     }
 
-    #[tracing::instrument(skip_all, fields(name = %request.name))]
+    #[tracing::instrument(
+        skip_all,
+        fields(session_id = field::Empty, pid = field::Empty, name = %request.name)
+    )]
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .get_prompt(request)
             .await
@@ -422,12 +542,13 @@ impl ServerHandler for ProxyHandler {
 
     // -- Completions --------------------------------------------------------
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn complete(
         &self,
         request: CompleteRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .complete(request)
             .await
@@ -436,12 +557,13 @@ impl ServerHandler for ProxyHandler {
 
     // -- Logging ------------------------------------------------------------
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn set_level(
         &self,
         request: SetLevelRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        self.record_session(&context.extensions);
         self.peer()?
             .set_level(request)
             .await
@@ -450,12 +572,13 @@ impl ServerHandler for ProxyHandler {
 
     // -- Notifications (client → child) -------------------------------------
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn on_cancelled(
         &self,
         notification: CancelledNotificationParam,
-        _context: NotificationContext<RoleServer>,
+        context: NotificationContext<RoleServer>,
     ) {
+        self.record_session(&context.extensions);
         if let Ok(peer) = self.peer()
             && let Err(e) = peer.notify_cancelled(notification).await
         {
@@ -463,12 +586,13 @@ impl ServerHandler for ProxyHandler {
         }
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn on_progress(
         &self,
         notification: ProgressNotificationParam,
-        _context: NotificationContext<RoleServer>,
+        context: NotificationContext<RoleServer>,
     ) {
+        self.record_session(&context.extensions);
         if let Ok(peer) = self.peer()
             && let Err(e) = peer.notify_progress(notification).await
         {
@@ -476,13 +600,15 @@ impl ServerHandler for ProxyHandler {
         }
     }
 
-    #[tracing::instrument(skip_all)]
-    async fn on_initialized(&self, _context: NotificationContext<RoleServer>) {
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        self.record_session(&context.extensions);
         tracing::debug!("client sent initialized notification");
     }
 
-    #[tracing::instrument(skip_all)]
-    async fn on_roots_list_changed(&self, _context: NotificationContext<RoleServer>) {
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
+    async fn on_roots_list_changed(&self, context: NotificationContext<RoleServer>) {
+        self.record_session(&context.extensions);
         if let Ok(peer) = self.peer()
             && let Err(e) = peer.notify_roots_list_changed().await
         {
@@ -490,12 +616,13 @@ impl ServerHandler for ProxyHandler {
         }
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn on_custom_notification(
         &self,
         notification: CustomNotification,
-        _context: NotificationContext<RoleServer>,
+        context: NotificationContext<RoleServer>,
     ) {
+        self.record_session(&context.extensions);
         tracing::debug!(
             method = %notification.method,
             "received custom notification (cannot be proxied at typed level)"
@@ -504,13 +631,17 @@ impl ServerHandler for ProxyHandler {
 
     // -- Custom requests ----------------------------------------------------
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(
+        skip_all,
+        fields(session_id = field::Empty, pid = field::Empty, method = %request.method)
+    )]
     async fn on_custom_request(
         &self,
         request: CustomRequest,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
-        tracing::debug!(method = %request.method, "received custom request");
+        self.record_session(&context.extensions);
+        tracing::debug!("received custom request");
         Err(ErrorData::new(
             ErrorCode::METHOD_NOT_FOUND,
             format!("custom method '{}' cannot be proxied", request.method),
