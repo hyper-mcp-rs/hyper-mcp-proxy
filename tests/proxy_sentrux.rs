@@ -48,32 +48,8 @@ impl ProxyFixture {
     /// client transport, which validates the proxy's protocol compliance
     /// at the transport level.
     async fn start(port: u16) -> Self {
-        let bin = env!("CARGO_BIN_EXE_hyper-mcp-proxy");
-        let child = Command::new(bin)
-            .args([
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--endpoint",
-                "/mcp",
-                "--",
-                "sentrux",
-                "--mcp",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("failed to start proxy binary");
-
-        let child = ProxyChild(child);
-
+        let child = spawn_proxy_process(port).await;
         let uri = format!("http://127.0.0.1:{}/mcp", port);
-
-        // Wait for the proxy to be ready at the TCP level before the rmcp
-        // client transport tries to connect.
-        wait_until_ready(port, Duration::from_secs(5)).await;
 
         // Connect to the proxy using the rmcp streamable-HTTP client
         // transport. `().serve(transport)` uses the default (no-op)
@@ -105,11 +81,42 @@ impl ProxyFixture {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// MCP protocol version advertised by the test client.
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+
 /// Find a free TCP port on localhost by briefly binding to port 0.
 fn free_port() -> u16 {
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind ephemeral port");
     listener.local_addr().unwrap().port()
+}
+
+/// Spawn the proxy binary in front of `sentrux --mcp` on the given port and
+/// wait until it accepts TCP connections. Returns an RAII handle that kills
+/// the child on drop.
+async fn spawn_proxy_process(port: u16) -> ProxyChild {
+    let bin = env!("CARGO_BIN_EXE_hyper-mcp-proxy");
+    let child = Command::new(bin)
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--endpoint",
+            "/mcp",
+            "--",
+            "sentrux",
+            "--mcp",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start proxy binary");
+
+    let child = ProxyChild(child);
+    wait_until_ready(port, Duration::from_secs(5)).await;
+    child
 }
 
 /// Poll until `127.0.0.1:port` accepts a TCP connection, or panic after
@@ -431,6 +438,201 @@ async fn test_multiple_requests_on_same_session() {
     assert_eq!(
         names1, names2,
         "tool names should be identical across calls"
+    );
+}
+
+/// Read chunks from `resp` until `marker` appears in the accumulated body,
+/// the body ends, or `timeout` elapses. Returns whatever was accumulated.
+///
+/// rmcp's streamable HTTP server prepends a priming SSE event (`data:\nid:
+/// 0\nretry: 3000`) before the actual JSON-RPC response, so we can't just
+/// stop at the first `\n\n` event terminator — we have to keep reading
+/// until the *content* event arrives. The `marker` is the substring that
+/// identifies a successful response (e.g. `"result"`).
+async fn read_sse_until_marker(
+    mut resp: reqwest::Response,
+    marker: &str,
+    timeout: Duration,
+) -> String {
+    let mut buf = String::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline - now;
+        match tokio::time::timeout(remaining, resp.chunk()).await {
+            Ok(Ok(Some(chunk))) => {
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                if buf.contains(marker) {
+                    break;
+                }
+            }
+            // Body ended, body errored, or per-chunk timeout — stop.
+            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    buf
+}
+
+#[tokio::test]
+async fn test_session_resumption_after_sse_close() {
+    // This test exercises MCP streamable-HTTP session resumption:
+    //
+    //   1. Open a fresh TCP/HTTP client and POST `initialize` — capture the
+    //      `Mcp-Session-Id` the server assigns in the response header.
+    //   2. Drop the response (closing the SSE socket) AND drop the entire
+    //      reqwest client so the underlying connection pool is gone.
+    //   3. With a brand-new reqwest client (i.e. a brand-new TCP
+    //      connection), POST `tools/list` with the captured session id.
+    //
+    // The session — and therefore the proxy's `ProxyHandler` and its
+    // child stdio process — must still be alive on the server side, even
+    // though the SSE stream from initialize was torn down. If the proxy
+    // were tearing the child down when the HTTP stream closed, step 3
+    // would either 404 (`Session not found`) or fail with
+    // `proxy session not initialized`.
+
+    let port = free_port();
+    let _proxy = spawn_proxy_process(port).await;
+    let url = format!("http://127.0.0.1:{}/mcp", port);
+
+    // -- Step 1: initialize with a one-shot client --------------------------
+    let init_client = reqwest::Client::new();
+    let init_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {
+                "name": "session-resumption-test",
+                "version": "0.0.0"
+            }
+        }
+    });
+
+    let init_resp = init_client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&init_body)
+        .send()
+        .await
+        .expect("initialize POST should succeed at the HTTP layer");
+
+    assert_eq!(
+        init_resp.status(),
+        reqwest::StatusCode::OK,
+        "initialize should return 200, got: {}",
+        init_resp.status()
+    );
+
+    let session_id = init_resp
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must include the Mcp-Session-Id header")
+        .to_str()
+        .expect("session id should be ASCII")
+        .to_string();
+    assert!(
+        !session_id.is_empty(),
+        "session id from response header must not be empty"
+    );
+
+    // Read just enough of the SSE body to confirm we got a valid
+    // InitializeResult, then drop the response — this is the "SSE socket
+    // close" the test simulates.
+    let init_event =
+        read_sse_until_marker(init_resp, "\"protocolVersion\"", Duration::from_secs(5)).await;
+    assert!(
+        init_event.contains("\"result\""),
+        "initialize SSE event should contain a JSON-RPC result, got: {init_event}"
+    );
+    assert!(
+        init_event.contains("\"protocolVersion\""),
+        "initialize result should advertise a protocolVersion, got: {init_event}"
+    );
+
+    // Tear down the original client and its connection pool entirely. This
+    // guarantees that the next request opens a brand-new TCP connection
+    // and is treated as a resumed session by the server, not as a
+    // continuation of the original keep-alive connection.
+    drop(init_client);
+
+    // -- Step 2: send the initialized notification on a new connection ----
+    //
+    // Per the MCP lifecycle, the client signals readiness with
+    // `notifications/initialized` before issuing further requests. This
+    // also serves as a quick liveness check on the resumed session: if
+    // the session were gone we'd get a 404 here, not a 202.
+    let resume_client = reqwest::Client::new();
+    let initialized_notif = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    });
+    let notif_resp = resume_client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("Mcp-Session-Id", &session_id)
+        .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+        .json(&initialized_notif)
+        .send()
+        .await
+        .expect("initialized notification POST should succeed at the HTTP layer");
+
+    assert!(
+        notif_resp.status().is_success(),
+        "initialized notification on resumed session should return 2xx, got: {} (body: {})",
+        notif_resp.status(),
+        notif_resp.text().await.unwrap_or_default(),
+    );
+
+    // -- Step 3: tools/list on the resumed session ------------------------
+    let tools_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    });
+
+    let tools_resp = resume_client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("Mcp-Session-Id", &session_id)
+        .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+        .json(&tools_body)
+        .send()
+        .await
+        .expect("tools/list POST should succeed at the HTTP layer");
+
+    let status = tools_resp.status();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "tools/list on resumed session should return 200, got: {status} (body: {})",
+        tools_resp.text().await.unwrap_or_default(),
+    );
+
+    let tools_event = read_sse_until_marker(tools_resp, "\"tools\"", Duration::from_secs(10)).await;
+
+    // Sanity: it's the response to id=2, contains a `tools` array, and
+    // mentions at least one well-known sentrux tool.
+    assert!(
+        tools_event.contains("\"id\":2") || tools_event.contains("\"id\": 2"),
+        "tools/list SSE event should be the response to request id=2, got: {tools_event}"
+    );
+    assert!(
+        tools_event.contains("\"tools\""),
+        "tools/list SSE event should contain a `tools` array, got: {tools_event}"
+    );
+    assert!(
+        tools_event.contains("scan") || tools_event.contains("health"),
+        "tools/list on resumed session should include at least one sentrux tool, got: {tools_event}"
     );
 }
 
