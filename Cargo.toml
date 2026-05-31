@@ -1,6 +1,6 @@
 [package]
 name = "hyper-mcp-proxy"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["Joseph Wortmann <joseph.wortmann@gmail.com>"]
 description = "A streamable-http to stdio MCP proxy"
