@@ -6,7 +6,11 @@ RUN cargo install cargo-auditable
 COPY Cargo.toml Cargo.lock ./
 RUN cargo fetch
 COPY src ./src
-RUN cargo auditable build --release --locked
+# tests/ is copied so the `mock-mcp-child` [[bin]] target path declared in
+# Cargo.toml resolves during manifest parsing. We restrict the build to the
+# production binary so the mock isn't actually compiled into the image.
+COPY tests ./tests
+RUN cargo auditable build --release --locked --bin hyper-mcp-proxy
 
 # ------- Cosign Stage ---------------
 
