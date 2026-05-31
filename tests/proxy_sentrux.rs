@@ -48,7 +48,7 @@ impl ProxyFixture {
     /// client transport, which validates the proxy's protocol compliance
     /// at the transport level.
     async fn start(port: u16) -> Self {
-        let child = spawn_proxy_process(port).await;
+        let child = spawn_proxy_process(port, &[]).await;
         let uri = format!("http://127.0.0.1:{}/mcp", port);
 
         // Connect to the proxy using the rmcp streamable-HTTP client
@@ -94,20 +94,25 @@ fn free_port() -> u16 {
 /// Spawn the proxy binary in front of `sentrux --mcp` on the given port and
 /// wait until it accepts TCP connections. Returns an RAII handle that kills
 /// the child on drop.
-async fn spawn_proxy_process(port: u16) -> ProxyChild {
+///
+/// `extra_proxy_args` is appended to the proxy's argv *before* the `--`
+/// separator, so callers can pass flags like `--session-keep-alive`.
+async fn spawn_proxy_process(port: u16, extra_proxy_args: &[&str]) -> ProxyChild {
     let bin = env!("CARGO_BIN_EXE_hyper-mcp-proxy");
+    let port_str = port.to_string();
+    let mut args: Vec<&str> = vec![
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port_str,
+        "--endpoint",
+        "/mcp",
+    ];
+    args.extend_from_slice(extra_proxy_args);
+    args.extend_from_slice(&["--", "sentrux", "--mcp"]);
+
     let child = Command::new(bin)
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "--endpoint",
-            "/mcp",
-            "--",
-            "sentrux",
-            "--mcp",
-        ])
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -476,6 +481,101 @@ async fn read_sse_until_marker(
     buf
 }
 
+/// End-to-end test for the `--session-keep-alive` CLI flag.
+///
+/// Spawns the proxy with a 1-second idle timeout, completes the initialize
+/// handshake, sleeps past the timeout, then sends `tools/list` with the
+/// stale session id. Per the MCP spec (and our `rmcp_session_lifecycle.rs`
+/// tests) the server must respond with 404 once the session has been
+/// reaped. This test pins that the CLI flag actually plumbs through to
+/// `LocalSessionManager.session_config.keep_alive`.
+#[tokio::test]
+async fn test_session_keep_alive_flag_reaps_idle_session() {
+    let port = free_port();
+    let _proxy = spawn_proxy_process(port, &["--session-keep-alive", "1"]).await;
+    let url = format!("http://127.0.0.1:{}/mcp", port);
+
+    // Step 1: initialize and capture the session id.
+    let init_client = reqwest::Client::new();
+    let init_resp = init_client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "keep-alive-test", "version": "0.0.0" }
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize POST should succeed at the HTTP layer");
+
+    assert_eq!(
+        init_resp.status(),
+        reqwest::StatusCode::OK,
+        "initialize should return 200"
+    );
+    let session_id = init_resp
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must include Mcp-Session-Id")
+        .to_str()
+        .expect("session id must be ASCII")
+        .to_string();
+    assert!(!session_id.is_empty(), "session id must not be empty");
+
+    // Drain + drop so the connection pool is gone.
+    let _ = init_resp.bytes().await;
+    drop(init_client);
+
+    // Step 2: sleep past the configured 1s idle timeout. 2.5s gives the
+    // worker's keep_alive_timeout, the WorkerTransport teardown, and the
+    // `close_session` cleanup in `spawn_session_worker` all plenty of
+    // headroom on a loaded CI machine.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    // Step 3: tools/list with the stale session id.
+    let resume_client = reqwest::Client::new();
+    let resp = resume_client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("Mcp-Session-Id", &session_id)
+        .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("tools/list POST should succeed at the HTTP layer");
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    assert_eq!(
+        status,
+        reqwest::StatusCode::NOT_FOUND,
+        "after --session-keep-alive 1s elapses, a stale session id should \
+         return 404, got: {status} (body: {body})"
+    );
+    assert!(
+        body.to_lowercase().contains("not found"),
+        "expected 404 body to mention 'not found', got: {body}"
+    );
+    assert!(
+        body.to_lowercase().contains("session"),
+        "expected 404 body to mention the session, got: {body}"
+    );
+}
+
 #[tokio::test]
 async fn test_session_resumption_after_sse_close() {
     // This test exercises MCP streamable-HTTP session resumption:
@@ -495,7 +595,7 @@ async fn test_session_resumption_after_sse_close() {
     // `proxy session not initialized`.
 
     let port = free_port();
-    let _proxy = spawn_proxy_process(port).await;
+    let _proxy = spawn_proxy_process(port, &[]).await;
     let url = format!("http://127.0.0.1:{}/mcp", port);
 
     // -- Step 1: initialize with a one-shot client --------------------------

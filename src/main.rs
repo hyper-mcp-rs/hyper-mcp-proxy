@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use axum::Router;
@@ -39,6 +40,19 @@ struct Cli {
     #[arg(short, long, default_value = "/mcp")]
     endpoint: String,
 
+    /// Idle timeout for MCP sessions, in seconds.
+    ///
+    /// Resets on every client request or notification. When the timer
+    /// elapses without activity, the session worker is reaped and its
+    /// stdio child process is killed. Subsequent requests carrying the
+    /// stale `Mcp-Session-Id` will receive HTTP 404 per the MCP spec.
+    ///
+    /// When unset, rmcp's `LocalSessionManager` default (5 minutes)
+    /// applies. The proxy does not override `SessionConfig` unless this
+    /// flag is provided.
+    #[arg(long, value_name = "SECONDS")]
+    session_keep_alive: Option<u64>,
+
     /// The stdio MCP server command and arguments (after --)
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -63,11 +77,26 @@ async fn main() -> Result<()> {
         .with_cancellation_token(cancellation_token.clone())
         .disable_allowed_hosts();
 
+    // Build the session manager. We only construct a custom
+    // `SessionConfig` when the operator passed `--session-keep-alive`;
+    // otherwise we use `LocalSessionManager::default()` so rmcp's own
+    // defaults govern every knob.
+    let mut session_manager = LocalSessionManager::default();
+
+    if let Some(session_keep_alive) = cli.session_keep_alive {
+        if session_keep_alive == 0 {
+            session_manager.session_config.keep_alive = None;
+        } else {
+            session_manager.session_config.keep_alive =
+                Some(Duration::from_secs(session_keep_alive));
+        }
+    }
+
     let cmd = command.clone();
     let mcp_service: StreamableHttpService<ProxyHandler, LocalSessionManager> =
         StreamableHttpService::new(
             move || Ok(ProxyHandler::new(cmd.clone())),
-            LocalSessionManager::default().into(),
+            Arc::new(session_manager),
             config,
         );
 
@@ -81,6 +110,7 @@ async fn main() -> Result<()> {
         %addr,
         endpoint = %cli.endpoint,
         command = ?&*command,
+        session_keep_alive = ?cli.session_keep_alive,
         "proxy server started"
     );
 

@@ -132,6 +132,7 @@ arguments) that will be spawned once per session.
 | `--host` | `-H` | `127.0.0.1` | Address to bind the HTTP listener to |
 | `--port` | `-p` | `8080` | Port to bind to |
 | `--endpoint` | `-e` | `/mcp` | URL path the MCP service is mounted on |
+| `--session-keep-alive <SECONDS>` |  | *(unset)* | Idle timeout per MCP session. When unset, rmcp's `LocalSessionManager` default (5 minutes) applies. Resets on every client request or notification; on expiry the session worker is reaped, the stdio child is killed, and subsequent requests with the stale `Mcp-Session-Id` receive HTTP 404 per the MCP spec. |
 
 ### Examples
 
@@ -145,6 +146,13 @@ Bind to all interfaces on port 3000 with a custom endpoint:
 
 ```sh
 hyper-mcp-proxy -H 0.0.0.0 -p 3000 -e /v1/mcp -- my-mcp-server --flag value
+```
+
+Reap idle sessions (and their stdio children) after 60 seconds of no client
+activity:
+
+```sh
+hyper-mcp-proxy --session-keep-alive 60 -- my-mcp-server
 ```
 
 Point the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
