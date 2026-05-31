@@ -52,7 +52,17 @@ in front of the proxy:
 
 ## Installation
 
-### From crates.io (recommended)
+### From Homebrew
+
+```sh
+brew tap hyper-mcp-rs/tap
+brew install hyper-mcp-proxy
+```
+
+The tap ships prebuilt binaries for macOS (Apple Silicon) and Linux
+(`aarch64` and `x86_64`).
+
+### From crates.io
 
 ```sh
 cargo install hyper-mcp-proxy
