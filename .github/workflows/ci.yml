@@ -12,6 +12,7 @@ on:
       - ".github/renovate.json5"
       - ".dockerignore"
       - "Dockerfile"
+      - ".zed/**"
   pull_request:
     branches: [main]
   workflow_dispatch:
