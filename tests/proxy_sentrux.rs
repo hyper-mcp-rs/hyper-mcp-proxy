@@ -30,11 +30,41 @@ struct ProxyFixture {
     client: RunningService<rmcp::service::RoleClient, ()>,
 }
 
-/// RAII wrapper that kills the proxy process on drop.
+/// RAII wrapper that terminates the proxy process on drop.
+///
+/// On Unix we send `SIGTERM` and give the proxy a short grace period to
+/// exit cleanly via its `axum::serve(...).with_graceful_shutdown(...)`
+/// handler. This matters for two reasons:
+///   1. It exercises the real production shutdown path end-to-end.
+///   2. Under `cargo llvm-cov`, the LLVM profile runtime only flushes
+///      coverage data on graceful exit, so `SIGKILL` would discard all
+///      subprocess coverage. We fall back to `SIGKILL` if the proxy
+///      hasn't exited after the grace window.
 struct ProxyChild(Child);
 
 impl Drop for ProxyChild {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let pid = self.0.id();
+            // SAFETY: `pid` came from a live `Child` we own. `SIGTERM`
+            // is a request to terminate and has no memory-safety
+            // implications; the worst case is the call returns -1
+            // because the process has already exited, which we ignore.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+            // Poll for graceful exit. 3s is generous on local hardware
+            // and still well under typical CI test timeouts.
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                match self.0.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                    Err(_) => break,
+                }
+            }
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
