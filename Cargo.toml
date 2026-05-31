@@ -35,6 +35,8 @@ libc = "0.2"
 reqwest = { version = "0.13", features = ["json"] }
 rmcp = { version = "1.7", features = [
     "client",
+    "server",
+    "transport-io",
     "transport-streamable-http-client",
     "transport-streamable-http-client-reqwest",
 ] }
@@ -44,6 +46,18 @@ tokio = { version = "1.52", features = ["full"] }
 [[bin]]
 name = "hyper-mcp-proxy"
 path = "src/main.rs"
+
+# Mock stdio MCP server used only by integration tests. Built whenever
+# `cargo test` (or any other target that pulls in dev-dependencies) runs,
+# located via `env!("CARGO_BIN_EXE_mock-mcp-child")` from the test code.
+# It compiles for `cargo build` too — the binary is tiny and depending on
+# a dev-only Cargo feature would force callers to remember a flag.
+[[bin]]
+name = "mock-mcp-child"
+path = "tests/support/mock_mcp_child.rs"
+test = false
+bench = false
+doc = false
 
 [package.metadata.release]
 publish = true
