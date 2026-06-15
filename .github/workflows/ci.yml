@@ -172,7 +172,21 @@ jobs:
           git ls-files -z | xargs -0 touch
 
       - name: Install sentrux
-        run: curl -fsSL https://raw.githubusercontent.com/sentrux/sentrux/main/install.sh | sh
+        env:
+          # renovate: datasource=github-releases depName=sentrux/sentrux
+          SENTRUX_VERSION: v0.5.7
+        # Download a pinned release binary directly rather than piping the
+        # upstream install.sh to sh. That script makes an unauthenticated
+        # api.github.com call to resolve "latest", which is rate-limited and
+        # flaky on shared CI runner IPs (504 -> "could not detect latest
+        # version"). Pinning is reproducible and shrinks the trust surface;
+        # Renovate bumps SENTRUX_VERSION via the annotation above.
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            "https://github.com/sentrux/sentrux/releases/download/${SENTRUX_VERSION}/sentrux-linux-x86_64" \
+            -o /usr/local/bin/sentrux
+          chmod +x /usr/local/bin/sentrux
+          sentrux --version
 
       - name: Install cargo-llvm-cov
         # Built from crates.io against Cargo.lock to keep the trust surface to

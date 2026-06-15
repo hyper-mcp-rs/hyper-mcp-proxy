@@ -6,6 +6,19 @@
   schedule: [
     'on monday',
   ],
+  customManagers: [
+    {
+      // Picks up `# renovate: datasource=… depName=…` annotations placed above
+      // a `KEY: value` env entry (e.g. SENTRUX_VERSION in ci.yml).
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^\.github/workflows/.+\.ya?ml$/',
+      ],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\S+) depName=(?<depName>\S+)\s+[A-Za-z0-9_]+:\s*(?<currentValue>\S+)',
+      ],
+    },
+  ],
   packageRules: [
     {
       matchDepTypes: [
