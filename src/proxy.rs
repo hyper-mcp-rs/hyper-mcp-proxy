@@ -54,6 +54,9 @@ struct ChildClientHandler {
 impl ClientHandler for ChildClientHandler {
     // -- Requests from the child server ------------------------------------
 
+    // Sampling is deprecated by SEP-2577, but the proxy must keep forwarding it
+    // to remain transparent for clients/servers that still rely on it.
+    #[allow(deprecated)]
     async fn create_message(
         &self,
         params: CreateMessageRequestParams,
@@ -65,6 +68,9 @@ impl ClientHandler for ChildClientHandler {
             .map_err(Self::upstream_error)
     }
 
+    // Roots is deprecated by SEP-2577, but the proxy must keep forwarding it
+    // to remain transparent for clients/servers that still rely on it.
+    #[allow(deprecated)]
     async fn list_roots(
         &self,
         _context: RequestContext<RoleClient>,
@@ -112,6 +118,9 @@ impl ClientHandler for ChildClientHandler {
         }
     }
 
+    // Logging is deprecated by SEP-2577, but the proxy must keep forwarding it
+    // to remain transparent for clients/servers that still rely on it.
+    #[allow(deprecated)]
     #[tracing::instrument(skip_all, fields(session_id = field::Empty))]
     async fn on_logging_message(
         &self,
@@ -336,7 +345,7 @@ impl ProxyHandler {
         // Get the child's capabilities directly from the initialization handshake.
         let mut init_result = client_service
             .peer_info()
-            .cloned()
+            .map(|info| (*info).clone())
             .unwrap_or_else(|| InitializeResult::new(ServerCapabilities::default()));
         init_result.server_info = Implementation::new("hyper-mcp-proxy", env!("CARGO_PKG_VERSION"));
 
@@ -557,6 +566,9 @@ impl ServerHandler for ProxyHandler {
 
     // -- Logging ------------------------------------------------------------
 
+    // Logging is deprecated by SEP-2577, but the proxy must keep forwarding it
+    // to remain transparent for clients/servers that still rely on it.
+    #[allow(deprecated)]
     #[tracing::instrument(skip_all, fields(session_id = field::Empty, pid = field::Empty))]
     async fn set_level(
         &self,

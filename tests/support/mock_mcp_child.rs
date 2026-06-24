@@ -39,6 +39,9 @@ use rmcp::{
 struct MockServer;
 
 impl ServerHandler for MockServer {
+    // Logging is deprecated by SEP-2577 (advisory only, no replacement API), but
+    // the mock must still advertise it so the proxy's forwarding can be tested.
+    #[allow(deprecated)]
     async fn initialize(
         &self,
         _request: InitializeRequestParams,
@@ -81,6 +84,10 @@ impl ServerHandler for MockServer {
         ]))
     }
 
+    // Sampling, roots, and logging are deprecated by SEP-2577 (advisory only, no
+    // replacement API), but the mock must still exercise them so the proxy's
+    // forwarding of these messages can be tested end-to-end.
+    #[allow(deprecated)]
     async fn call_tool(
         &self,
         request: CallToolRequestParams,

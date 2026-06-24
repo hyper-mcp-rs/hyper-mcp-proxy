@@ -378,6 +378,9 @@ async fn complete_is_proxied() {
     );
 }
 
+// Logging is deprecated by SEP-2577 (advisory only, no replacement API), but
+// the proxy still forwards set_level, so the test must exercise it.
+#[allow(deprecated)]
 #[tokio::test]
 async fn set_level_is_proxied() {
     let f = Fixture::start().await;

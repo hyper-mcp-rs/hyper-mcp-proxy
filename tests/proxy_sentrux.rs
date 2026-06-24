@@ -100,7 +100,7 @@ impl ProxyFixture {
     }
 
     /// Return the server info advertised by the proxy during initialize.
-    fn server_info(&self) -> &rmcp::model::InitializeResult {
+    fn server_info(&self) -> std::sync::Arc<rmcp::model::InitializeResult> {
         self.client
             .peer_info()
             .expect("peer_info should be available after initialize")
