@@ -9,22 +9,26 @@
 //!
 //! NOT shipped to end users; only built when test targets compile.
 
+// Sampling, roots, and logging are deprecated by SEP-2577 (advisory only, no
+// replacement API), but the mock must still advertise and exercise them so the
+// proxy's forwarding of these messages can be tested end-to-end.
+#![allow(deprecated)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
     model::{
-        AnnotateAble, CallToolRequestParams, CallToolResult, CancelledNotificationParam,
-        CompleteRequestParams, CompleteResult, CompletionInfo, Content,
-        CreateElicitationRequestParams, CreateMessageRequestParams, ElicitationSchema, ErrorCode,
-        GetPromptRequestParams, GetPromptResult, Implementation, InitializeRequestParams,
-        InitializeResult, JsonObject, ListPromptsResult, ListResourceTemplatesResult,
-        ListResourcesResult, ListToolsResult, LoggingLevel, LoggingMessageNotificationParam,
-        NumberOrString, PaginatedRequestParams, ProgressNotificationParam, ProgressToken, Prompt,
-        PromptMessage, PromptMessageRole, RawResource, RawResourceTemplate,
-        ReadResourceRequestParams, ReadResourceResult, ResourceContents,
-        ResourceUpdatedNotificationParam, ServerCapabilities, SetLevelRequestParams,
+        CallToolRequestParams, CallToolResult, CancelledNotificationParam, CompleteRequestParams,
+        CompleteResult, CompletionInfo, ContentBlock, CreateMessageRequestParams,
+        ElicitRequestParams, ElicitationSchema, ErrorCode, GetPromptRequestParams, GetPromptResult,
+        Implementation, InitializeRequestParams, InitializeResult, JsonObject, ListPromptsResult,
+        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, LoggingLevel,
+        LoggingMessageNotificationParam, NumberOrString, PaginatedRequestParams,
+        ProgressNotificationParam, ProgressToken, Prompt, PromptMessage, ReadResourceRequestParams,
+        ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+        ResourceUpdatedNotificationParam, Role, ServerCapabilities, SetLevelRequestParams,
         SubscribeRequestParams, Tool, UnsubscribeRequestParams,
     },
     serde_json,
@@ -94,7 +98,7 @@ impl ServerHandler for MockServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         match request.name.as_ref() {
-            "echo" => Ok(CallToolResult::success(vec![Content::text(
+            "echo" => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "echo-response",
             )])),
 
@@ -114,18 +118,20 @@ impl ServerHandler for MockServer {
 
                 // Logging
                 let _ = peer
-                    .notify_logging_message(LoggingMessageNotificationParam {
-                        level: LoggingLevel::Info,
-                        logger: Some("mock-mcp-child".into()),
-                        data: serde_json::Value::String("hello from mock".into()),
-                    })
+                    .notify_logging_message(
+                        LoggingMessageNotificationParam::new(
+                            LoggingLevel::Info,
+                            serde_json::Value::String("hello from mock".into()),
+                        )
+                        .with_logger("mock-mcp-child"),
+                    )
                     .await;
 
                 // Resource updated
                 let _ = peer
-                    .notify_resource_updated(ResourceUpdatedNotificationParam {
-                        uri: "mock://resources/0".into(),
-                    })
+                    .notify_resource_updated(ResourceUpdatedNotificationParam::new(
+                        "mock://resources/0",
+                    ))
                     .await;
 
                 // Resource / tool / prompt list changes
@@ -135,13 +141,13 @@ impl ServerHandler for MockServer {
 
                 // Cancellation
                 let _ = peer
-                    .notify_cancelled(CancelledNotificationParam {
-                        request_id: NumberOrString::String("req-1".into()),
-                        reason: Some("mock cancel".into()),
-                    })
+                    .notify_cancelled(CancelledNotificationParam::new(
+                        Some(NumberOrString::String("req-1".into())),
+                        Some("mock cancel".into()),
+                    ))
                     .await;
 
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![ContentBlock::text(
                     "notifications-sent",
                 )]))
             }
@@ -159,14 +165,14 @@ impl ServerHandler for MockServer {
 
                 // Ask the client for elicitation
                 let _ = peer
-                    .create_elicitation(CreateElicitationRequestParams::FormElicitationParams {
+                    .create_elicitation(ElicitRequestParams::FormElicitationParams {
                         meta: None,
                         message: "mock elicitation".into(),
                         requested_schema: ElicitationSchema::new(BTreeMap::new()),
                     })
                     .await;
 
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![ContentBlock::text(
                     "server-requests-done",
                 )]))
             }
@@ -186,17 +192,10 @@ impl ServerHandler for MockServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        let resource = RawResource {
-            uri: "mock://resources/0".into(),
-            name: "mock-resource".into(),
-            title: Some("Mock Resource".into()),
-            description: Some("A fake resource for proxy tests".into()),
-            mime_type: Some("text/plain".into()),
-            size: None,
-            icons: None,
-            meta: None,
-        }
-        .no_annotation();
+        let resource = Resource::new("mock://resources/0", "mock-resource")
+            .with_title("Mock Resource")
+            .with_description("A fake resource for proxy tests")
+            .with_mime_type("text/plain");
         Ok(ListResourcesResult::with_all_items(vec![resource]))
     }
 
@@ -205,15 +204,10 @@ impl ServerHandler for MockServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        let template = RawResourceTemplate {
-            uri_template: "mock://resources/{id}".into(),
-            name: "mock-template".into(),
-            title: Some("Mock Resource Template".into()),
-            description: Some("Parameterized mock resource".into()),
-            mime_type: Some("text/plain".into()),
-            icons: None,
-        }
-        .no_annotation();
+        let template = ResourceTemplate::new("mock://resources/{id}", "mock-template")
+            .with_title("Mock Resource Template")
+            .with_description("Parameterized mock resource")
+            .with_mime_type("text/plain");
         Ok(ListResourceTemplatesResult::with_all_items(vec![template]))
     }
 
@@ -267,10 +261,8 @@ impl ServerHandler for MockServer {
         _request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, ErrorData> {
-        let mut result = GetPromptResult::new(vec![PromptMessage::new_text(
-            PromptMessageRole::User,
-            "hello from mock",
-        )]);
+        let mut result =
+            GetPromptResult::new(vec![PromptMessage::new_text(Role::User, "hello from mock")]);
         result.description = Some("rendered mock prompt".into());
         Ok(result)
     }

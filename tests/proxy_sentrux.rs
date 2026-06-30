@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rmcp::{
     ServiceExt,
-    model::{CallToolRequestParams, Content, Tool},
+    model::{CallToolRequestParams, ContentBlock, Tool},
     service::RunningService,
     transport::streamable_http_client::StreamableHttpClientTransport,
 };
@@ -211,7 +211,7 @@ async fn connect_with_retry(
 }
 
 /// Extract the text from the first content item of a `CallToolResult`.
-fn first_text(content: &[Content]) -> &str {
+fn first_text(content: &[ContentBlock]) -> &str {
     content
         .first()
         .and_then(|c| c.as_text())

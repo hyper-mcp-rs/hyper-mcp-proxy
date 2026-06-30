@@ -20,6 +20,11 @@
 //! Together these cover every `match`-arm of the proxy's
 //! `ServerHandler` and `ClientHandler` impls.
 
+// Sampling, roots, and logging are deprecated by SEP-2577 (advisory only, no
+// replacement API), but these tests must still exercise them end-to-end to
+// verify the proxy keeps forwarding them transparently.
+#![allow(deprecated)]
+
 use std::collections::BTreeMap;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -29,8 +34,8 @@ use rmcp::{
     ClientHandler, ServiceExt,
     model::{
         CallToolRequestParams, CancelledNotificationParam, CompleteRequestParams,
-        CreateElicitationRequestParams, CreateElicitationResult, CreateMessageRequestParams,
-        CreateMessageResult, ElicitationAction, GetPromptRequestParams, ListRootsResult,
+        CreateMessageRequestParams, CreateMessageResult, ElicitRequestParams, ElicitResult,
+        ElicitationAction, GetPromptRequestParams, ListRootsResult,
         LoggingMessageNotificationParam, ProgressNotificationParam, PromptReference, Reference,
         ResourceUpdatedNotificationParam, Role, SamplingMessage, SetLevelRequestParams,
         SubscribeRequestParams, UnsubscribeRequestParams,
@@ -99,11 +104,11 @@ impl ClientHandler for RecordingClient {
 
     async fn create_elicitation(
         &self,
-        _request: CreateElicitationRequestParams,
+        _request: ElicitRequestParams,
         _context: RequestContext<RoleClient>,
-    ) -> Result<CreateElicitationResult, rmcp::ErrorData> {
+    ) -> Result<ElicitResult, rmcp::ErrorData> {
         self.record_request("create_elicitation");
-        Ok(CreateElicitationResult::new(ElicitationAction::Cancel))
+        Ok(ElicitResult::new(ElicitationAction::Cancel))
     }
 
     // -- Notifications (server -> client) ----------------------------------
@@ -365,10 +370,7 @@ async fn complete_is_proxied() {
         .peer()
         .complete(CompleteRequestParams::new(
             Reference::Prompt(PromptReference::new("mock-prompt")),
-            rmcp::model::ArgumentInfo {
-                name: "x".into(),
-                value: "".into(),
-            },
+            rmcp::model::ArgumentInfo::new("x", ""),
         ))
         .await
         .expect("complete should succeed");

@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
+// Sampling, roots, and logging are deprecated by SEP-2577 (advisory only, no
+// replacement API), but the proxy must keep importing and forwarding them to
+// stay transparent for clients/servers that still rely on them. Method bodies
+// that use these types carry their own `#[allow(deprecated)]` with rationale.
+#[allow(deprecated)]
 use rmcp::{
     ClientHandler, ErrorData, ServerHandler, ServiceExt,
     model::{
         CallToolRequestParams, CallToolResult, CancelledNotificationParam, CompleteRequestParams,
-        CompleteResult, CreateElicitationRequestParams, CreateElicitationResult,
-        CreateMessageRequestParams, CreateMessageResult, CustomNotification, CustomRequest,
-        CustomResult, ElicitationResponseNotificationParam, ErrorCode, Extensions,
-        GetPromptRequestParams, GetPromptResult, Implementation, InitializeRequestParams,
-        InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-        ListRootsResult, ListToolsResult, LoggingMessageNotificationParam, PaginatedRequestParams,
+        CompleteResult, CreateMessageRequestParams, CreateMessageResult, CustomNotification,
+        CustomRequest, CustomResult, ElicitRequestParams, ElicitResult,
+        ElicitationResponseNotificationParam, ErrorCode, Extensions, GetPromptRequestParams,
+        GetPromptResult, Implementation, InitializeRequestParams, InitializeResult,
+        ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListRootsResult,
+        ListToolsResult, LoggingMessageNotificationParam, PaginatedRequestParams,
         ProgressNotificationParam, ReadResourceRequestParams, ReadResourceResult,
         ResourceUpdatedNotificationParam, ServerCapabilities, SetLevelRequestParams,
         SubscribeRequestParams, UnsubscribeRequestParams,
@@ -83,9 +88,9 @@ impl ClientHandler for ChildClientHandler {
 
     async fn create_elicitation(
         &self,
-        request: CreateElicitationRequestParams,
+        request: ElicitRequestParams,
         _context: RequestContext<RoleClient>,
-    ) -> Result<CreateElicitationResult, ErrorData> {
+    ) -> Result<ElicitResult, ErrorData> {
         self.upstream
             .create_elicitation(request)
             .await
