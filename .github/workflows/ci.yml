@@ -13,6 +13,8 @@ on:
       - ".dockerignore"
       - "Dockerfile"
       - ".zed/**"
+      - "AGENTS.md"
+      - ".sentrux/**"
   pull_request:
     branches: [main]
   workflow_dispatch:
