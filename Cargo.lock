@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "hyper-mcp-proxy"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "axum",
