@@ -17,7 +17,7 @@ anyhow = "1.0"
 axum = "0.8"
 clap = { version = "4.6", features = ["derive"] }
 http = "1"
-rmcp = { version = "2.1", features = [
+rmcp = { version = "2.2", features = [
     "server",
     "client",
     "transport-streamable-http-server",
@@ -28,12 +28,12 @@ rmcp = { version = "2.1", features = [
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = "0.7"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 libc = "0.2"
 reqwest = { version = "0.13", features = ["json"] }
-rmcp = { version = "2.1", features = [
+rmcp = { version = "2.2", features = [
     "client",
     "server",
     "transport-io",

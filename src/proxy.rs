@@ -25,6 +25,8 @@ use rmcp::{
 use tokio::sync::OnceCell;
 use tracing::{Span, field};
 
+use crate::stderr::log_stderr;
+
 /// HTTP header that carries the MCP session ID on every post-`initialize` request.
 const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 
@@ -306,27 +308,38 @@ impl ProxyHandler {
 
         tracing::info!(%program, ?args, "spawning child MCP server");
 
-        // TokioChildProcess::new expects a tokio::process::Command
+        // The builder pipes stdin/stdout by default; stderr is piped
+        // explicitly so it can be captured and re-emitted through `tracing`
+        // (correlated with pid + session id) rather than interleaving raw
+        // with the proxy's own output.
         let mut cmd = tokio::process::Command::new(program);
-        cmd.args(args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit());
+        cmd.args(args);
 
-        let transport = TokioChildProcess::new(cmd).map_err(|e| {
-            tracing::error!(error = %e, %program, "failed to create child transport");
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("failed to create child transport: {e}"),
-                None,
-            )
-        })?;
+        let (transport, child_stderr) = TokioChildProcess::builder(cmd)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                tracing::error!(error = %e, %program, "failed to create child transport");
+                ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!("failed to create child transport: {e}"),
+                    None,
+                )
+            })?;
 
         // Capture the child PID before the transport is consumed by `serve`.
         let child_pid = transport.id();
         if let Some(pid) = child_pid {
             Span::current().record("pid", pid);
             tracing::info!(pid, %program, "child MCP server process spawned");
+        }
+
+        // Log the child's stderr through tracing. The task ends on its
+        // own at EOF, which the OS delivers when the child exits.
+        if let Some(stderr) = child_stderr {
+            tokio::spawn(log_stderr(stderr, child_pid, Arc::clone(&self.session_id)));
+        } else {
+            tracing::warn!(pid = child_pid, "child stderr was not captured");
         }
 
         // Connect as an MCP client to the child, using our forwarding handler

@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod proxy;
+mod stderr;
 
 use proxy::ProxyHandler;
 
@@ -117,13 +118,15 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
+    // Initialize tracing. Logs are emitted as structured JSON lines on
+    // stdout so log collectors (ECS, Cloud Run, etc.) can ingest them
+    // without a parsing step.
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,hyper_streamable_http=debug".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().json())
         .init();
 
     let cli = Cli::parse();
