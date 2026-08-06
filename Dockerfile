@@ -14,7 +14,7 @@ RUN cargo auditable build --release --locked --bin hyper-mcp-proxy
 
 # ------- Cosign Stage ---------------
 
-FROM ghcr.io/sigstore/cosign/cosign:v3.1.1 AS cosign
+FROM ghcr.io/sigstore/cosign/cosign:v3.1.3 AS cosign
 
 # ------- Production Stage -----------
 FROM debian:13-slim
